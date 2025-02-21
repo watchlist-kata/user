@@ -95,19 +95,63 @@ func (s *UserService) GetByID(ctx context.Context, req *userProto.GetUserRequest
 
 // Update обновляет информацию о пользователе
 func (s *UserService) Update(ctx context.Context, req *userProto.UpdateUserRequest) (*userProto.UpdateUserResponse, error) {
+	// Логируем полученный ID и другие поля
+	log.Printf("Received request to update user with ID: %d", req.Id)
+	log.Printf("Request body: %+v", req)
+
+	// Создаем объект userToUpdate на основе данных из запроса
 	userToUpdate := &userProto.User{
-		Id:       req.User.Id,
-		Username: req.User.Username,
-		Email:    req.User.Email,
-		Pwdhash:  req.User.Pwdhash,
-		Salt:     req.User.Salt,
+		Id:       req.Id,
+		Username: req.Username,
+		Email:    req.Email,
+		// Мы не устанавливаем Pwdhash и Salt здесь, так как они будут обновлены только если передан новый пароль
 	}
 
+	// Получаем существующего пользователя по ID из базы данных
+	existingUser, err := s.repo.GetUserByID(uint(req.Id))
+	if err != nil {
+		log.Printf("Error retrieving user: %v", err)
+		return nil, err // Обработка ошибки при получении пользователя
+	}
+
+	// Обновляем поля пользователя, если они были изменены в запросе
+	if req.Username != "" {
+		userToUpdate.Username = req.Username
+	} else {
+		userToUpdate.Username = existingUser.Username // Сохраняем старое имя, если новое не передано
+	}
+
+	if req.Email != "" {
+		userToUpdate.Email = req.Email
+	} else {
+		userToUpdate.Email = existingUser.Email // Сохраняем старый email, если новый не передан
+	}
+
+	if req.Password != "" {
+		salt, err := GenerateSalt()
+		if err != nil {
+			return nil, err
+		}
+		hashedPassword, err := HashPassword(req.Password, salt)
+		if err != nil {
+			return nil, err
+		}
+		userToUpdate.Pwdhash = hashedPassword
+		userToUpdate.Salt = salt
+	} else {
+		userToUpdate.Pwdhash = existingUser.Pwdhash // Сохраняем старый хеш пароля, если новый не передан
+		userToUpdate.Salt = existingUser.Salt       // Сохраняем старую соль, если новый не передан
+	}
+
+	// Сохраняем обновленного пользователя в базе данных
 	if err := s.repo.UpdateUser(userToUpdate); err != nil {
+		log.Printf("Error updating user: %v", err)
 		return nil, err // Обработка ошибки при обновлении
 	}
 
-	return &userProto.UpdateUserResponse{User: userToUpdate}, nil
+	log.Printf("User updated successfully: %+v", userToUpdate)
+
+	return &userProto.UpdateUserResponse{User: userToUpdate}, nil // Возвращаем обновленного пользователя в ответе
 }
 
 // Delete удаляет пользователя по ID

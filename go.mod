@@ -5,7 +5,7 @@ go 1.22.7
 require (
 	github.com/IBM/sarama v1.45.0
 	github.com/joho/godotenv v1.5.1
-	github.com/watchlist-kata/protos/user v0.0.0-20250220162738-86a6db92b28a
+	github.com/watchlist-kata/protos/user v0.0.0-20250221093541-21e554c9f584
 	golang.org/x/crypto v0.32.0
 	google.golang.org/grpc v1.70.0
 	gorm.io/driver/postgres v1.5.11
