@@ -2,3 +2,6 @@
 [INFO] - 2025-02-27T17:23:24+03:00 - user deleted successfully
 [INFO] - 2025-02-27T17:36:52+03:00 - user deleted successfully with ID: 7
 [INFO] - 2025-02-27T17:36:52+03:00 - user deleted successfully with ID: 7
+[DEBUG] - 2025-02-27T14:48:52Z - received request to check password for user with ID: 5
+[INFO] - 2025-02-27T14:48:53Z - user fetched successfully with ID: 5
+[INFO] - 2025-02-27T14:48:53Z - password check successful for user with ID: 5

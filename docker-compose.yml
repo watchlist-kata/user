@@ -1,0 +1,15 @@
+services:
+  user:
+    build: .
+    ports:
+      - "50052:50052"
+    env_file:
+      - ./cmd/.env
+    volumes:
+      - ./cmd/logs:/app/logs
+    networks:
+      - user-network
+
+networks:
+  user-network:
+    driver: bridge
