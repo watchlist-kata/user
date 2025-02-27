@@ -5,67 +5,100 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
-	"log"
+	"fmt"
+	"log/slog"
 
 	userProto "github.com/watchlist-kata/protos/user"
 	"github.com/watchlist-kata/user/internal/repository"
 	"golang.org/x/crypto/bcrypt"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // UserService представляет собой структуру сервиса пользователей
 type UserService struct {
-	userProto.UnimplementedUserServiceServer                       // Встраиваем структуру
-	repo                                     repository.Repository // Интерфейс репозитория пользователей
+	userProto.UnimplementedUserServiceServer
+	repo   repository.Repository
+	logger *slog.Logger
 }
 
 // NewUserService создает новый экземпляр UserService
-func NewUserService(repo repository.Repository) *UserService {
+func NewUserService(repo repository.Repository, logger *slog.Logger) *UserService {
 	return &UserService{
-		repo: repo,
+		repo:   repo,
+		logger: logger,
+	}
+}
+
+// checkContextCancelled проверяет отмену контекста и логирует ошибку
+func (s *UserService) checkContextCancelled(ctx context.Context, method string) error {
+	select {
+	case <-ctx.Done():
+		s.logger.ErrorContext(ctx, fmt.Sprintf("%s operation canceled", method), slog.Any("error", ctx.Err()))
+		return ctx.Err()
+	default:
+		return nil
 	}
 }
 
 // GenerateSalt генерирует случайную соль
 func GenerateSalt() (string, error) {
-	salt := make([]byte, 16) // Генерируем 16 байт соли
+	salt := make([]byte, 16)
 	_, err := rand.Read(salt)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to generate salt: %w", err)
 	}
 	return base64.StdEncoding.EncodeToString(salt), nil
 }
 
 // HashPassword хэширует пароль с использованием соли
 func HashPassword(password string, salt string) (string, error) {
-	hashedPassword := password + salt // Добавляем соль к паролю
+	hashedPassword := password + salt
 	hash, err := bcrypt.GenerateFromPassword([]byte(hashedPassword), bcrypt.DefaultCost)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to hash password: %w", err)
 	}
 	return string(hash), nil
 }
 
 // Create создает нового пользователя
 func (s *UserService) Create(ctx context.Context, req *userProto.CreateUserRequest) (*userProto.CreateUserResponse, error) {
-	// Проверка уникальности имени пользователя и электронной почты
-	if _, err := s.repo.GetUserByUsername(req.Username); err == nil {
-		return nil, errors.New("username already exists")
+	if err := s.checkContextCancelled(ctx, "Create"); err != nil {
+		return nil, status.Error(codes.Canceled, err.Error())
 	}
 
-	if _, err := s.repo.GetUserByEmail(req.Email); err == nil {
-		return nil, errors.New("email already exists")
+	// Проверка уникальности имени пользователя
+	_, err := s.repo.GetUserByUsername(ctx, req.Username)
+	if err == nil {
+		s.logger.WarnContext(ctx, "username already exists", slog.String("username", req.Username))
+		return nil, status.Error(codes.AlreadyExists, "username already exists")
+	} else if !errors.Is(err, repository.ErrUserNotFound) {
+		s.logger.ErrorContext(ctx, "failed to check username uniqueness", slog.String("username", req.Username), slog.Any("error", err))
+		return nil, status.Error(codes.Internal, "failed to check username uniqueness")
+	}
+
+	// Проверка уникальности электронной почты
+	_, err = s.repo.GetUserByEmail(ctx, req.Email)
+	if err == nil {
+		s.logger.WarnContext(ctx, "email already exists", slog.String("email", req.Email))
+		return nil, status.Error(codes.AlreadyExists, "email already exists")
+	} else if !errors.Is(err, repository.ErrUserNotFound) {
+		s.logger.ErrorContext(ctx, "failed to check email uniqueness", slog.String("email", req.Email), slog.Any("error", err))
+		return nil, status.Error(codes.Internal, "failed to check email uniqueness")
 	}
 
 	// Генерация соли
 	salt, err := GenerateSalt()
 	if err != nil {
-		return nil, err
+		s.logger.ErrorContext(ctx, "failed to generate salt", slog.Any("error", err))
+		return nil, status.Error(codes.Internal, "failed to generate salt")
 	}
 
 	// Хеширование пароля
 	hashedPassword, err := HashPassword(req.Password, salt)
 	if err != nil {
-		return nil, err
+		s.logger.ErrorContext(ctx, "failed to hash password", slog.Any("error", err))
+		return nil, status.Error(codes.Internal, "failed to hash password")
 	}
 
 	// Создание нового пользователя
@@ -77,106 +110,145 @@ func (s *UserService) Create(ctx context.Context, req *userProto.CreateUserReque
 	}
 
 	// Сохранение пользователя в базе данных
-	if err := s.repo.CreateUser(newUser); err != nil {
-		return nil, err // Обработка ошибки при сохранении
+	createdUser, err := s.repo.CreateUser(ctx, newUser)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "failed to create user", slog.Any("error", err))
+		return nil, status.Error(codes.Internal, "failed to create user")
 	}
 
-	return &userProto.CreateUserResponse{User: newUser}, nil
+	s.logger.InfoContext(ctx, "user created successfully", slog.String("username", req.Username))
+	return &userProto.CreateUserResponse{User: createdUser}, nil
 }
 
 // GetByID получает пользователя по ID
 func (s *UserService) GetByID(ctx context.Context, req *userProto.GetUserRequest) (*userProto.GetUserResponse, error) {
-	user, err := s.repo.GetUserByID(uint(req.Id))
-	if err != nil {
-		return nil, err // Пользователь не найден или произошла ошибка
+	if err := s.checkContextCancelled(ctx, "GetByID"); err != nil {
+		return nil, status.Error(codes.Canceled, err.Error())
 	}
+
+	user, err := s.repo.GetUserByID(ctx, uint(req.Id))
+	if err != nil {
+		if errors.Is(err, repository.ErrUserNotFound) {
+			s.logger.WarnContext(ctx, "user not found", slog.Int64("user_id", req.Id))
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		s.logger.ErrorContext(ctx, "failed to get user by ID", slog.Int64("user_id", req.Id), slog.Any("error", err))
+		return nil, status.Error(codes.Internal, "failed to get user")
+	}
+
+	s.logger.InfoContext(ctx, "user fetched successfully", slog.Int64("user_id", req.Id))
 	return &userProto.GetUserResponse{User: user}, nil
 }
 
 // Update обновляет информацию о пользователе
 func (s *UserService) Update(ctx context.Context, req *userProto.UpdateUserRequest) (*userProto.UpdateUserResponse, error) {
-	// Логируем полученный ID и другие поля
-	log.Printf("Received request to update user with ID: %d", req.Id)
-	log.Printf("Request body: %+v", req)
-
-	// Создаем объект userToUpdate на основе данных из запроса
-	userToUpdate := &userProto.User{
-		Id:       req.Id,
-		Username: req.Username,
-		Email:    req.Email,
-		// Мы не устанавливаем Pwdhash и Salt здесь, так как они будут обновлены только если передан новый пароль
+	if err := s.checkContextCancelled(ctx, "Update"); err != nil {
+		return nil, status.Error(codes.Canceled, err.Error())
 	}
 
-	// Получаем существующего пользователя по ID из базы данных
-	existingUser, err := s.repo.GetUserByID(uint(req.Id))
+	s.logger.DebugContext(ctx, "received request to update user", slog.Int64("user_id", req.Id), slog.Any("request", req))
+
+	// Получаем существующего пользователя по ID
+	existingUser, err := s.repo.GetUserByID(ctx, uint(req.Id))
 	if err != nil {
-		log.Printf("Error retrieving user: %v", err)
-		return nil, err // Обработка ошибки при получении пользователя
+		if errors.Is(err, repository.ErrUserNotFound) {
+			s.logger.WarnContext(ctx, "user not found", slog.Int64("user_id", req.Id))
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		s.logger.ErrorContext(ctx, "failed to get user for update", slog.Int64("user_id", req.Id), slog.Any("error", err))
+		return nil, status.Error(codes.Internal, "failed to get user")
 	}
 
-	// Обновляем поля пользователя, если они были изменены в запросе
+	// Создаем объект для обновления
+	userToUpdate := &userProto.User{
+		Id:        req.Id,
+		Username:  existingUser.Username,
+		Email:     existingUser.Email,
+		Pwdhash:   existingUser.Pwdhash,
+		Salt:      existingUser.Salt,
+		CreatedAt: existingUser.CreatedAt,
+		UpdatedAt: existingUser.UpdatedAt,
+	}
+
+	// Обновляем разрешенные поля
 	if req.Username != "" {
 		userToUpdate.Username = req.Username
-	} else {
-		userToUpdate.Username = existingUser.Username // Сохраняем старое имя, если новое не передано
 	}
-
 	if req.Email != "" {
 		userToUpdate.Email = req.Email
-	} else {
-		userToUpdate.Email = existingUser.Email // Сохраняем старый email, если новый не передан
 	}
 
+	// Если передан новый пароль, генерируем соль и хэшируем
 	if req.Password != "" {
 		salt, err := GenerateSalt()
 		if err != nil {
-			return nil, err
+			s.logger.ErrorContext(ctx, "failed to generate salt for password update", slog.Any("error", err))
+			return nil, status.Error(codes.Internal, "failed to update password")
 		}
 		hashedPassword, err := HashPassword(req.Password, salt)
 		if err != nil {
-			return nil, err
+			s.logger.ErrorContext(ctx, "failed to hash password for update", slog.Any("error", err))
+			return nil, status.Error(codes.Internal, "failed to update password")
 		}
 		userToUpdate.Pwdhash = hashedPassword
 		userToUpdate.Salt = salt
-	} else {
-		userToUpdate.Pwdhash = existingUser.Pwdhash // Сохраняем старый хеш пароля, если новый не передан
-		userToUpdate.Salt = existingUser.Salt       // Сохраняем старую соль, если новый не передан
 	}
 
-	// Сохраняем обновленного пользователя в базе данных
-	if err := s.repo.UpdateUser(userToUpdate); err != nil {
-		log.Printf("Error updating user: %v", err)
-		return nil, err // Обработка ошибки при обновлении
+	// Обновляем пользователя в репозитории
+	updatedUser, err := s.repo.UpdateUser(ctx, userToUpdate)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "failed to update user", slog.Int64("user_id", req.Id), slog.Any("error", err))
+		return nil, status.Error(codes.Internal, "failed to update user")
 	}
 
-	log.Printf("User updated successfully: %+v", userToUpdate)
-
-	return &userProto.UpdateUserResponse{User: userToUpdate}, nil // Возвращаем обновленного пользователя в ответе
+	s.logger.InfoContext(ctx, "user updated successfully", slog.Int64("user_id", req.Id))
+	return &userProto.UpdateUserResponse{User: updatedUser}, nil
 }
 
 // Delete удаляет пользователя по ID
 func (s *UserService) Delete(ctx context.Context, req *userProto.DeleteUserRequest) (*userProto.DeleteUserResponse, error) {
-	err := s.repo.DeleteUser(uint(req.Id))
-	if err != nil {
-		return &userProto.DeleteUserResponse{Success: false}, err // Обработка ошибки при удалении
+	if err := s.checkContextCancelled(ctx, "Delete"); err != nil {
+		return nil, status.Error(codes.Canceled, err.Error())
 	}
+
+	err := s.repo.DeleteUser(ctx, uint(req.Id))
+	if err != nil {
+		if errors.Is(err, repository.ErrUserNotFound) {
+			s.logger.WarnContext(ctx, "user not found", slog.Int64("user_id", req.Id))
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		s.logger.ErrorContext(ctx, "failed to delete user", slog.Int64("user_id", req.Id), slog.Any("error", err))
+		return nil, status.Error(codes.Internal, "failed to delete user")
+	}
+
+	s.logger.InfoContext(ctx, "user deleted successfully", slog.Int64("user_id", req.Id))
 	return &userProto.DeleteUserResponse{Success: true}, nil
 }
 
 // CheckPass проверяет правильность пароля для заданного пользователя
 func (s *UserService) CheckPass(ctx context.Context, req *userProto.CheckPasswordRequest) (*userProto.CheckPasswordResponse, error) {
-	log.Printf("Received request to check password for userId: %d", req.UserId) // Логируем полученный userId
+	if err := s.checkContextCancelled(ctx, "CheckPass"); err != nil {
+		return nil, status.Error(codes.Canceled, err.Error())
+	}
 
-	user, err := s.repo.GetUserByID(uint(req.UserId))
+	s.logger.DebugContext(ctx, "received request to check password", slog.Int64("user_id", req.UserId))
+
+	user, err := s.repo.GetUserByID(ctx, uint(req.UserId))
 	if err != nil {
-		log.Printf("Error retrieving user: %v", err)
-		return nil, errors.New("user not found") // Пользователь не найден или произошла ошибка
+		if errors.Is(err, repository.ErrUserNotFound) {
+			s.logger.WarnContext(ctx, "user not found", slog.Int64("user_id", req.UserId))
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		s.logger.ErrorContext(ctx, "failed to get user for password check", slog.Int64("user_id", req.UserId), slog.Any("error", err))
+		return nil, status.Error(codes.Internal, "failed to check password")
 	}
 
 	err = bcrypt.CompareHashAndPassword([]byte(user.Pwdhash), []byte(req.Password+user.Salt))
 	if err != nil {
-		return &userProto.CheckPasswordResponse{Valid: false}, nil // Пароль неверен
+		s.logger.DebugContext(ctx, "incorrect password", slog.Int64("user_id", req.UserId))
+		return &userProto.CheckPasswordResponse{Valid: false}, nil
 	}
 
-	return &userProto.CheckPasswordResponse{Valid: true}, nil // Пароль верен
+	s.logger.InfoContext(ctx, "password check successful", slog.Int64("user_id", req.UserId))
+	return &userProto.CheckPasswordResponse{Valid: true}, nil
 }

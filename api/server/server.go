@@ -1,10 +1,13 @@
 package main
 
 import (
-	"log"
+	"fmt"
+	"log/slog"
 	"net"
+	"os"
 
 	"github.com/watchlist-kata/protos/user"
+	"github.com/watchlist-kata/user/internal/config"
 	"github.com/watchlist-kata/user/internal/repository"
 	"github.com/watchlist-kata/user/internal/service"
 	"google.golang.org/grpc"
@@ -13,33 +16,55 @@ import (
 )
 
 func main() {
-	// Настройка подключения к базе данных PostgreSQL
-	dsn := "host=localhost user=youruser password=yourpassword dbname=yourdb port=5432 sslmode=disable"
+	// Загрузка конфигурации из .env файла
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		fmt.Printf("failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Logger
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	// Database connection string
+	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
+		cfg.DBHost, cfg.DBUser, cfg.DBPassword, cfg.DBName, cfg.DBPort, cfg.DBSSLMode)
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
-		log.Fatalf("failed to connect to database: %v", err)
+		logger.Error("failed to connect to database", slog.Any("error", err))
+		panic(fmt.Sprintf("failed to connect to database: %v", err))
 	}
 
-	// Создание экземпляра репозитория
-	repo := repository.NewPostgresRepository(db)
+	// AutoMigrate the schema
+	err = db.AutoMigrate(&repository.GormUser{})
+	if err != nil {
+		logger.Error("failed to migrate database schema", slog.Any("error", err))
+		panic(fmt.Sprintf("failed to migrate database schema: %v", err))
+	}
 
-	// Создание экземпляра сервиса пользователей
-	userService := service.NewUserService(repo)
+	// Create repository instance
+	repo := repository.NewPostgresRepository(db, logger)
 
-	// Создание нового gRPC сервера
+	// Create service instance
+	userService := service.NewUserService(repo, logger)
+
+	// Create gRPC server
 	grpcServer := grpc.NewServer()
 
-	// Регистрация сервиса пользователей в gRPC сервере
+	// Register the user service with the gRPC server
 	user.RegisterUserServiceServer(grpcServer, userService)
 
-	// Настройка порта для сервера
-	listener, err := net.Listen("tcp", ":50051")
+	// Configure the listener port
+	listener, err := net.Listen("tcp", cfg.GRPCPort)
 	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
+		logger.Error("failed to listen", slog.Any("error", err))
+		panic(fmt.Sprintf("failed to listen: %v", err))
 	}
 
-	log.Println("Starting server on :50051...")
+	// Start the server
+	logger.Info("starting gRPC server", slog.String("port", cfg.GRPCPort))
 	if err := grpcServer.Serve(listener); err != nil {
-		log.Fatalf("failed to serve: %v", err)
+		logger.Error("failed to serve", slog.Any("error", err))
+		panic(fmt.Sprintf("failed to serve: %v", err))
 	}
 }

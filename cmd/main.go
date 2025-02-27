@@ -1,16 +1,15 @@
 package main
 
 import (
-	"log"
-	"net"
-
 	"github.com/watchlist-kata/protos/user"
 	"github.com/watchlist-kata/user/internal/config"
 	"github.com/watchlist-kata/user/internal/repository"
 	"github.com/watchlist-kata/user/internal/service"
+	"github.com/watchlist-kata/user/pkg/logger"
+	"github.com/watchlist-kata/user/pkg/utils"
 	"google.golang.org/grpc"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
+	"log"
+	"net"
 )
 
 func main() {
@@ -20,20 +19,28 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	// Формируем строку подключения к базе данных PostgreSQL
-	dsn := "host=" + cfg.DBHost + " user=" + cfg.DBUser + " password=" + cfg.DBPassword +
-		" dbname=" + cfg.DBName + " port=" + cfg.DBPort + " sslmode=" + cfg.DBSSLMode
+	// Инициализируем кастомный логгер
+	customLogger, err := logger.NewLogger(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.ServiceName, cfg.LogBufferSize)
+	if err != nil {
+		log.Fatalf("failed to create custom logger: %v", err)
+	}
+	defer func() {
+		if multiHandler, ok := customLogger.Handler().(*logger.MultiHandler); ok {
+			multiHandler.CloseAll()
+		}
+	}()
 
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	// Создание подключения к базе данных
+	db, err := utils.ConnectToDatabase(cfg)
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
 	}
 
 	// Создание экземпляра репозитория
-	repo := repository.NewPostgresRepository(db)
+	repo := repository.NewPostgresRepository(db, customLogger)
 
 	// Создание экземпляра сервиса пользователей
-	userService := service.NewUserService(repo)
+	userService := service.NewUserService(repo, customLogger)
 
 	// Создание нового gRPC сервера
 	grpcServer := grpc.NewServer()
