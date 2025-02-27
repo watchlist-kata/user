@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/watchlist-kata/protos/user"
-	"gorm.io/gorm"
 	"log/slog"
 	"time"
 	"unicode/utf8"
+
+	"github.com/watchlist-kata/protos/user"
+	"gorm.io/gorm"
 )
 
 var ErrUserNotFound = errors.New("user not found")
@@ -63,14 +64,14 @@ func (r *PostgresRepository) CreateUser(ctx context.Context, user *user.User) (*
 	// Проверка отмены контекста
 	select {
 	case <-ctx.Done():
-		r.logger.Error("CreateUser operation canceled", slog.Any("error", ctx.Err()))
+		r.logger.Error(fmt.Sprintf("CreateUser operation canceled for user ID: %d", user.Id), slog.Any("error", ctx.Err()))
 		return nil, ctx.Err()
 	default:
 	}
 
 	// Валидация входных данные
 	if err := r.validateUser(user); err != nil {
-		r.logger.Error("failed to create user: invalid data", slog.Any("error", err))
+		r.logger.Error(fmt.Sprintf("failed to create user: invalid data for user ID: %d", user.Id), slog.Any("error", err))
 		return nil, err
 	}
 
@@ -84,7 +85,7 @@ func (r *PostgresRepository) CreateUser(ctx context.Context, user *user.User) (*
 	// Транзакционная операция
 	tx := r.db.Begin()
 	if tx.Error != nil {
-		r.logger.Error("failed to begin transaction", slog.Any("error", tx.Error))
+		r.logger.Error(fmt.Sprintf("failed to begin transaction for user ID: %d", user.Id), slog.Any("error", tx.Error))
 		return nil, tx.Error
 	}
 
@@ -92,14 +93,14 @@ func (r *PostgresRepository) CreateUser(ctx context.Context, user *user.User) (*
 	select {
 	case <-ctx.Done():
 		tx.Rollback()
-		r.logger.Error("CreateUser operation canceled during transaction", slog.Any("error", ctx.Err()))
+		r.logger.Error(fmt.Sprintf("CreateUser operation canceled during transaction for user ID: %d", user.Id), slog.Any("error", ctx.Err()))
 		return nil, ctx.Err()
 	default:
 	}
 
 	if err := tx.Create(gormUser).Error; err != nil {
 		tx.Rollback()
-		r.logger.Error("failed to create user", slog.Any("error", err))
+		r.logger.Error(fmt.Sprintf("failed to create user with username: %s", user.Username), slog.Any("error", err))
 		return nil, err
 	}
 
@@ -107,17 +108,17 @@ func (r *PostgresRepository) CreateUser(ctx context.Context, user *user.User) (*
 	select {
 	case <-ctx.Done():
 		tx.Rollback()
-		r.logger.Error("CreateUser operation canceled after user creation", slog.Any("error", ctx.Err()))
+		r.logger.Error(fmt.Sprintf("CreateUser operation canceled after user creation for user ID: %d", user.Id), slog.Any("error", ctx.Err()))
 		return nil, ctx.Err()
 	default:
 	}
 
 	if err := tx.Commit().Error; err != nil {
-		r.logger.Error("failed to commit transaction", slog.Any("error", err))
+		r.logger.Error(fmt.Sprintf("failed to commit transaction for user ID: %d", user.Id), slog.Any("error", err))
 		return nil, err
 	}
 
-	r.logger.Info("user created successfully", slog.Int64("user_id", int64(gormUser.ID)))
+	r.logger.Info(fmt.Sprintf("user created successfully with username: %s", user.Username))
 	return convertToProtoUser(gormUser), nil
 }
 
@@ -126,7 +127,7 @@ func (r *PostgresRepository) GetUserByID(ctx context.Context, id uint) (*user.Us
 	// Проверка отмены контекста
 	select {
 	case <-ctx.Done():
-		r.logger.Error("GetUserByID operation canceled", slog.Any("error", ctx.Err()))
+		r.logger.Error(fmt.Sprintf("GetUserByID operation canceled for user ID: %d", id), slog.Any("error", ctx.Err()))
 		return nil, ctx.Err()
 	default:
 	}
@@ -134,14 +135,14 @@ func (r *PostgresRepository) GetUserByID(ctx context.Context, id uint) (*user.Us
 	var gormUser GormUser
 	if err := r.db.First(&gormUser, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			r.logger.Warn("user not found", slog.Int("user_id", int(id)))
+			r.logger.Warn(fmt.Sprintf("user not found with ID: %d", id))
 			return nil, ErrUserNotFound
 		}
-		r.logger.Error("failed to get user by ID", slog.Any("error", err), slog.Int("user_id", int(id)))
+		r.logger.Error(fmt.Sprintf("failed to get user with ID: %d", id), slog.Any("error", err))
 		return nil, err
 	}
 
-	r.logger.Info("user fetched successfully", slog.Int("user_id", int(id)))
+	r.logger.Info(fmt.Sprintf("user fetched successfully with ID: %d", id))
 	return convertToProtoUser(&gormUser), nil
 }
 
@@ -150,7 +151,7 @@ func (r *PostgresRepository) GetUserByUsername(ctx context.Context, username str
 	// Проверка отмены контекста
 	select {
 	case <-ctx.Done():
-		r.logger.Error("GetUserByUsername operation canceled", slog.Any("error", ctx.Err()))
+		r.logger.Error(fmt.Sprintf("GetUserByUsername operation canceled for username: %s", username), slog.Any("error", ctx.Err()))
 		return nil, ctx.Err()
 	default:
 	}
@@ -158,14 +159,14 @@ func (r *PostgresRepository) GetUserByUsername(ctx context.Context, username str
 	var gormUser GormUser
 	if err := r.db.Where("username = ?", username).First(&gormUser).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			r.logger.Warn("user not found", slog.String("username", username))
+			r.logger.Warn(fmt.Sprintf("user not found with username: %s", username))
 			return nil, ErrUserNotFound
 		}
-		r.logger.Error("failed to get user by username", slog.Any("error", err), slog.String("username", username))
+		r.logger.Error(fmt.Sprintf("failed to get user with username: %s", username), slog.Any("error", err))
 		return nil, err
 	}
 
-	r.logger.Info("user fetched successfully", slog.String("username", username))
+	r.logger.Info(fmt.Sprintf("user fetched successfully with username: %s", username))
 	return convertToProtoUser(&gormUser), nil
 }
 
@@ -174,7 +175,7 @@ func (r *PostgresRepository) GetUserByEmail(ctx context.Context, email string) (
 	// Проверка отмены контекста
 	select {
 	case <-ctx.Done():
-		r.logger.Error("GetUserByEmail operation canceled", slog.Any("error", ctx.Err()))
+		r.logger.Error(fmt.Sprintf("GetUserByEmail operation canceled for email: %s", email), slog.Any("error", ctx.Err()))
 		return nil, ctx.Err()
 	default:
 	}
@@ -182,14 +183,14 @@ func (r *PostgresRepository) GetUserByEmail(ctx context.Context, email string) (
 	var gormUser GormUser
 	if err := r.db.Where("email = ?", email).First(&gormUser).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			r.logger.Warn("user not found", slog.String("email", email))
+			r.logger.Warn(fmt.Sprintf("user not found with email: %s", email))
 			return nil, ErrUserNotFound
 		}
-		r.logger.Error("failed to get user by email", slog.Any("error", err), slog.String("email", email))
+		r.logger.Error(fmt.Sprintf("failed to get user with email: %s", email), slog.Any("error", err))
 		return nil, err
 	}
 
-	r.logger.Info("user fetched successfully", slog.String("email", email))
+	r.logger.Info(fmt.Sprintf("user fetched successfully with email: %s", email))
 	return convertToProtoUser(&gormUser), nil
 }
 
@@ -198,7 +199,7 @@ func (r *PostgresRepository) UpdateUser(ctx context.Context, user *user.User) (*
 	// Проверка отмены контекста
 	select {
 	case <-ctx.Done():
-		r.logger.Error("UpdateUser operation canceled", slog.Any("error", ctx.Err()))
+		r.logger.Error(fmt.Sprintf("UpdateUser operation canceled for user ID: %d", user.Id), slog.Any("error", ctx.Err()))
 		return nil, ctx.Err()
 	default:
 	}
@@ -216,23 +217,22 @@ func (r *PostgresRepository) UpdateUser(ctx context.Context, user *user.User) (*
 	var existingUser GormUser
 	if err := r.db.First(&existingUser, gormUser.ID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			r.logger.Warn("user not found", slog.Int("user_id", int(gormUser.ID)))
+			r.logger.Warn(fmt.Sprintf("user not found with ID: %d", user.Id))
 			return nil, ErrUserNotFound
 		}
-		r.logger.Error("failed to check user existence", slog.Any("error", err), slog.Int("user_id", int(gormUser.ID)))
+		r.logger.Error(fmt.Sprintf("failed to check user existence for user ID: %d", user.Id), slog.Any("error", err))
 		return nil, err
 	}
 
 	// Выполнение обновления
 	result := r.db.Model(&existingUser).Updates(gormUser)
 	if result.Error != nil {
-		r.logger.Error("failed to update user", slog.Any("error", result.Error), slog.Int("user_id", int(gormUser.ID)))
+		r.logger.Error(fmt.Sprintf("failed to update user with ID: %d", user.Id), slog.Any("error", result.Error))
 		return nil, result.Error
 	}
 
+	r.logger.Info(fmt.Sprintf("user updated successfully with ID: %d", user.Id))
 	updatedUser := convertToProtoUser(&existingUser)
-
-	r.logger.Info("user updated successfully", slog.Int("user_id", int(gormUser.ID)))
 	return updatedUser, nil
 }
 
@@ -241,30 +241,29 @@ func (r *PostgresRepository) DeleteUser(ctx context.Context, id uint) error {
 	// Проверка отмены контекста
 	select {
 	case <-ctx.Done():
-		r.logger.Error("DeleteUser operation canceled", slog.Any("error", ctx.Err()))
+		r.logger.Error(fmt.Sprintf("DeleteUser operation canceled for user ID: %d", id), slog.Any("error", ctx.Err()))
 		return ctx.Err()
 	default:
 	}
 
-	// Проверка существования пользователя перед удалением
 	var existingUser GormUser
 	if err := r.db.First(&existingUser, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			r.logger.Warn("user not found", slog.Int("user_id", int(id)))
+			r.logger.Warn(fmt.Sprintf("user not found with ID: %d", id))
 			return ErrUserNotFound
 		}
-		r.logger.Error("failed to check user existence", slog.Any("error", err), slog.Int("user_id", int(id)))
+		r.logger.Error(fmt.Sprintf("failed to check user existence for user ID: %d", id), slog.Any("error", err))
 		return err
 	}
 
 	// Выполнение удаления
 	result := r.db.Delete(&existingUser)
 	if result.Error != nil {
-		r.logger.Error("failed to delete user", slog.Any("error", result.Error), slog.Int("user_id", int(id)))
+		r.logger.Error(fmt.Sprintf("failed to delete user with ID: %d", id), slog.Any("error", result.Error))
 		return result.Error
 	}
 
-	r.logger.Info("user deleted successfully", slog.Int("user_id", int(id)))
+	r.logger.Info(fmt.Sprintf("user deleted successfully with ID: %d", id))
 	return nil
 }
 

@@ -70,20 +70,20 @@ func (s *UserService) Create(ctx context.Context, req *userProto.CreateUserReque
 	// Проверка уникальности имени пользователя
 	_, err := s.repo.GetUserByUsername(ctx, req.Username)
 	if err == nil {
-		s.logger.WarnContext(ctx, "username already exists", slog.String("username", req.Username))
+		s.logger.WarnContext(ctx, fmt.Sprintf("username already exists: %s", req.Username))
 		return nil, status.Error(codes.AlreadyExists, "username already exists")
 	} else if !errors.Is(err, repository.ErrUserNotFound) {
-		s.logger.ErrorContext(ctx, "failed to check username uniqueness", slog.String("username", req.Username), slog.Any("error", err))
+		s.logger.ErrorContext(ctx, fmt.Sprintf("failed to check username uniqueness: %s", req.Username), slog.Any("error", err))
 		return nil, status.Error(codes.Internal, "failed to check username uniqueness")
 	}
 
 	// Проверка уникальности электронной почты
 	_, err = s.repo.GetUserByEmail(ctx, req.Email)
 	if err == nil {
-		s.logger.WarnContext(ctx, "email already exists", slog.String("email", req.Email))
+		s.logger.WarnContext(ctx, fmt.Sprintf("email already exists: %s", req.Email))
 		return nil, status.Error(codes.AlreadyExists, "email already exists")
 	} else if !errors.Is(err, repository.ErrUserNotFound) {
-		s.logger.ErrorContext(ctx, "failed to check email uniqueness", slog.String("email", req.Email), slog.Any("error", err))
+		s.logger.ErrorContext(ctx, fmt.Sprintf("failed to check email uniqueness: %s", req.Email), slog.Any("error", err))
 		return nil, status.Error(codes.Internal, "failed to check email uniqueness")
 	}
 
@@ -116,7 +116,7 @@ func (s *UserService) Create(ctx context.Context, req *userProto.CreateUserReque
 		return nil, status.Error(codes.Internal, "failed to create user")
 	}
 
-	s.logger.InfoContext(ctx, "user created successfully", slog.String("username", req.Username))
+	s.logger.InfoContext(ctx, fmt.Sprintf("user created successfully with username: %s", req.Username))
 	return &userProto.CreateUserResponse{User: createdUser}, nil
 }
 
@@ -126,17 +126,18 @@ func (s *UserService) GetByID(ctx context.Context, req *userProto.GetUserRequest
 		return nil, status.Error(codes.Canceled, err.Error())
 	}
 
-	user, err := s.repo.GetUserByID(ctx, uint(req.Id))
+	userID := uint(req.Id)
+	user, err := s.repo.GetUserByID(ctx, userID)
 	if err != nil {
 		if errors.Is(err, repository.ErrUserNotFound) {
-			s.logger.WarnContext(ctx, "user not found", slog.Int64("user_id", req.Id))
+			s.logger.WarnContext(ctx, fmt.Sprintf("user not found with ID: %d", userID))
 			return nil, status.Error(codes.NotFound, "user not found")
 		}
-		s.logger.ErrorContext(ctx, "failed to get user by ID", slog.Int64("user_id", req.Id), slog.Any("error", err))
+		s.logger.ErrorContext(ctx, fmt.Sprintf("failed to get user by ID: %d", userID), slog.Any("error", err))
 		return nil, status.Error(codes.Internal, "failed to get user")
 	}
 
-	s.logger.InfoContext(ctx, "user fetched successfully", slog.Int64("user_id", req.Id))
+	s.logger.InfoContext(ctx, fmt.Sprintf("user fetched successfully with ID: %d", userID))
 	return &userProto.GetUserResponse{User: user}, nil
 }
 
@@ -146,16 +147,17 @@ func (s *UserService) Update(ctx context.Context, req *userProto.UpdateUserReque
 		return nil, status.Error(codes.Canceled, err.Error())
 	}
 
-	s.logger.DebugContext(ctx, "received request to update user", slog.Int64("user_id", req.Id), slog.Any("request", req))
+	userID := req.Id
+	s.logger.DebugContext(ctx, fmt.Sprintf("received request to update user with ID: %d", userID), slog.Any("request", req))
 
 	// Получаем существующего пользователя по ID
 	existingUser, err := s.repo.GetUserByID(ctx, uint(req.Id))
 	if err != nil {
 		if errors.Is(err, repository.ErrUserNotFound) {
-			s.logger.WarnContext(ctx, "user not found", slog.Int64("user_id", req.Id))
+			s.logger.WarnContext(ctx, fmt.Sprintf("user not found with ID: %d", userID))
 			return nil, status.Error(codes.NotFound, "user not found")
 		}
-		s.logger.ErrorContext(ctx, "failed to get user for update", slog.Int64("user_id", req.Id), slog.Any("error", err))
+		s.logger.ErrorContext(ctx, fmt.Sprintf("failed to get user for update with ID: %d", userID), slog.Any("error", err))
 		return nil, status.Error(codes.Internal, "failed to get user")
 	}
 
@@ -197,11 +199,11 @@ func (s *UserService) Update(ctx context.Context, req *userProto.UpdateUserReque
 	// Обновляем пользователя в репозитории
 	updatedUser, err := s.repo.UpdateUser(ctx, userToUpdate)
 	if err != nil {
-		s.logger.ErrorContext(ctx, "failed to update user", slog.Int64("user_id", req.Id), slog.Any("error", err))
+		s.logger.ErrorContext(ctx, fmt.Sprintf("failed to update user with ID: %d", userID), slog.Any("error", err))
 		return nil, status.Error(codes.Internal, "failed to update user")
 	}
 
-	s.logger.InfoContext(ctx, "user updated successfully", slog.Int64("user_id", req.Id))
+	s.logger.InfoContext(ctx, fmt.Sprintf("user updated successfully with ID: %d", userID))
 	return &userProto.UpdateUserResponse{User: updatedUser}, nil
 }
 
@@ -211,17 +213,18 @@ func (s *UserService) Delete(ctx context.Context, req *userProto.DeleteUserReque
 		return nil, status.Error(codes.Canceled, err.Error())
 	}
 
-	err := s.repo.DeleteUser(ctx, uint(req.Id))
+	userID := uint(req.Id)
+	err := s.repo.DeleteUser(ctx, userID)
 	if err != nil {
 		if errors.Is(err, repository.ErrUserNotFound) {
-			s.logger.WarnContext(ctx, "user not found", slog.Int64("user_id", req.Id))
+			s.logger.WarnContext(ctx, fmt.Sprintf("user not found with ID: %d", userID))
 			return nil, status.Error(codes.NotFound, "user not found")
 		}
-		s.logger.ErrorContext(ctx, "failed to delete user", slog.Int64("user_id", req.Id), slog.Any("error", err))
+		s.logger.ErrorContext(ctx, fmt.Sprintf("failed to delete user with ID: %d", userID), slog.Any("error", err))
 		return nil, status.Error(codes.Internal, "failed to delete user")
 	}
 
-	s.logger.InfoContext(ctx, "user deleted successfully", slog.Int64("user_id", req.Id))
+	s.logger.InfoContext(ctx, fmt.Sprintf("user deleted successfully with ID: %d", userID))
 	return &userProto.DeleteUserResponse{Success: true}, nil
 }
 
@@ -231,24 +234,25 @@ func (s *UserService) CheckPass(ctx context.Context, req *userProto.CheckPasswor
 		return nil, status.Error(codes.Canceled, err.Error())
 	}
 
-	s.logger.DebugContext(ctx, "received request to check password", slog.Int64("user_id", req.UserId))
+	userID := req.UserId
+	s.logger.DebugContext(ctx, fmt.Sprintf("received request to check password for user with ID: %d", userID))
 
 	user, err := s.repo.GetUserByID(ctx, uint(req.UserId))
 	if err != nil {
 		if errors.Is(err, repository.ErrUserNotFound) {
-			s.logger.WarnContext(ctx, "user not found", slog.Int64("user_id", req.UserId))
+			s.logger.WarnContext(ctx, fmt.Sprintf("user not found with ID: %d", userID))
 			return nil, status.Error(codes.NotFound, "user not found")
 		}
-		s.logger.ErrorContext(ctx, "failed to get user for password check", slog.Int64("user_id", req.UserId), slog.Any("error", err))
+		s.logger.ErrorContext(ctx, fmt.Sprintf("failed to get user for password check with ID: %d", userID), slog.Any("error", err))
 		return nil, status.Error(codes.Internal, "failed to check password")
 	}
 
 	err = bcrypt.CompareHashAndPassword([]byte(user.Pwdhash), []byte(req.Password+user.Salt))
 	if err != nil {
-		s.logger.DebugContext(ctx, "incorrect password", slog.Int64("user_id", req.UserId))
+		s.logger.DebugContext(ctx, fmt.Sprintf("incorrect password for user with ID: %d", userID))
 		return &userProto.CheckPasswordResponse{Valid: false}, nil
 	}
 
-	s.logger.InfoContext(ctx, "password check successful", slog.Int64("user_id", req.UserId))
+	s.logger.InfoContext(ctx, fmt.Sprintf("password check successful for user with ID: %d", userID))
 	return &userProto.CheckPasswordResponse{Valid: true}, nil
 }
